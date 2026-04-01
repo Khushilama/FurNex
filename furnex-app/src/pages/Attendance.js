@@ -7,6 +7,7 @@ export default function Attendance() {
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [newEmp, setNewEmp] = useState({ name: '', role: '' });
   const [showAddEmp, setShowAddEmp] = useState(false);
+  const [editingEmp, setEditingEmp] = useState(null); // { id, name, role }
 
   const load = () => {
     api.getEmployees().then(r => setEmployees(r.data)).catch(() => {});
@@ -39,6 +40,13 @@ export default function Attendance() {
 
   const deleteEmployee = async (id) => {
     await api.deleteEmployee(id);
+    load();
+  };
+
+  const updateEmployee = async () => {
+    if (!editingEmp || !editingEmp.name || !editingEmp.role) return;
+    await api.updateEmployee(editingEmp.id, { name: editingEmp.name, role: editingEmp.role });
+    setEditingEmp(null);
     load();
   };
 
@@ -124,11 +132,22 @@ export default function Attendance() {
             )}
             {employees.map((emp, i) => {
               const status = getStatus(emp.id);
+              const isEditing = editingEmp && editingEmp.id === emp.id;
               return (
                 <tr key={emp.id}>
                   <td>{i + 1}</td>
-                  <td><strong>{emp.name}</strong></td>
-                  <td>{emp.role}</td>
+                  <td>
+                    {isEditing
+                      ? <input value={editingEmp.name} onChange={e => setEditingEmp({ ...editingEmp, name: e.target.value })} style={{ width: '100%' }} />
+                      : <strong>{emp.name}</strong>
+                    }
+                  </td>
+                  <td>
+                    {isEditing
+                      ? <input value={editingEmp.role} onChange={e => setEditingEmp({ ...editingEmp, role: e.target.value })} style={{ width: '100%' }} />
+                      : emp.role
+                    }
+                  </td>
                   <td>
                     {status
                       ? <span className={`badge ${status.toLowerCase()}`}>{status}</span>
@@ -156,7 +175,17 @@ export default function Attendance() {
                     </div>
                   </td>
                   <td>
-                    <button className="btn btn-danger btn-sm" onClick={() => deleteEmployee(emp.id)}>Remove</button>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {isEditing ? (
+                        <>
+                          <button className="btn btn-sm" style={{ background: '#e8f0fe', color: '#2563eb' }} onClick={updateEmployee}>Save</button>
+                          <button className="btn btn-sm" onClick={() => setEditingEmp(null)}>Cancel</button>
+                        </>
+                      ) : (
+                        <button className="btn btn-sm" style={{ background: '#e8f0fe', color: '#2563eb' }} onClick={() => setEditingEmp({ id: emp.id, name: emp.name, role: emp.role })}>Edit</button>
+                      )}
+                      <button className="btn btn-danger btn-sm" onClick={() => deleteEmployee(emp.id)}>Remove</button>
+                    </div>
                   </td>
                 </tr>
               );
