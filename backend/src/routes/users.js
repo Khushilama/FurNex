@@ -4,51 +4,77 @@ const bcrypt = require('bcryptjs');
 const db = require('../database');
 
 // List all users (exclude password)
-router.get('/', (req, res) => {
-  res.json(db.prepare('SELECT id, username, name, role FROM users ORDER BY id').all());
+router.get('/', async (req, res) => {
+  try {
+    const r = await db.query('SELECT id, username, name, role FROM users ORDER BY id');
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-// Create user (admin only)
-router.post('/', (req, res) => {
-  const { username, password, name, role } = req.body;
-  if (!username || !password) return res.status(400).json({ message: 'username and password required' });
-  if (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
-    return res.status(409).json({ message: 'Username already exists' });
+// Create user
+router.post('/', async (req, res) => {
+  try {
+    const { username, password, name, role } = req.body;
+    if (!username || !password) return res.status(400).json({ message: 'username and password required' });
+
+    const existing = await db.query('SELECT id FROM users WHERE username=$1', [username]);
+    if (existing.rowCount > 0) return res.status(409).json({ message: 'Username already exists' });
+
+    const hash = await bcrypt.hash(password, 10);
+    const r = await db.query(
+      'INSERT INTO users (username, password, name, role) VALUES ($1, $2, $3, $4) RETURNING id, username, name, role',
+      [username, hash, name || username, role || 'staff']
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-  const hash = bcrypt.hashSync(password, 10);
-  const result = db.prepare(
-    'INSERT INTO users (username, password, name, role) VALUES (?, ?, ?, ?)'
-  ).run(username, hash, name || username, role || 'staff');
-  res.status(201).json({ id: result.lastInsertRowid, username, name: name || username, role: role || 'staff' });
 });
 
 // Update user (name, role, optional password reset)
-router.put('/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
-  if (!user) return res.status(404).json({ message: 'Not found' });
-  const { name, role, password } = req.body;
-  if (password) {
-    const hash = bcrypt.hashSync(password, 10);
-    db.prepare('UPDATE users SET name=?, role=?, password=? WHERE id=?').run(name ?? user.name, role ?? user.role, hash, id);
-  } else {
-    db.prepare('UPDATE users SET name=?, role=? WHERE id=?').run(name ?? user.name, role ?? user.role, id);
+router.put('/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const existing = await db.query('SELECT * FROM users WHERE id=$1', [id]);
+    if (existing.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    const user = existing.rows[0];
+    const { name, role, password } = req.body;
+
+    if (password) {
+      const hash = await bcrypt.hash(password, 10);
+      await db.query(
+        'UPDATE users SET name=$1, role=$2, password=$3 WHERE id=$4',
+        [name ?? user.name, role ?? user.role, hash, id]
+      );
+    } else {
+      await db.query(
+        'UPDATE users SET name=$1, role=$2 WHERE id=$3',
+        [name ?? user.name, role ?? user.role, id]
+      );
+    }
+
+    const updated = await db.query('SELECT id, username, name, role FROM users WHERE id=$1', [id]);
+    res.json(updated.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-  const updated = db.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(id);
-  res.json(updated);
 });
 
 // Delete user (cannot delete yourself)
-router.delete('/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  if (req.user && req.user.id === id) {
-    return res.status(400).json({ message: 'Cannot delete your own account' });
+router.delete('/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (req.user && req.user.id === id) {
+      return res.status(400).json({ message: 'Cannot delete your own account' });
+    }
+    const r = await db.query('DELETE FROM users WHERE id=$1', [id]);
+    if (r.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    res.json({ message: 'Deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-  if (!db.prepare('SELECT id FROM users WHERE id = ?').get(id)) {
-    return res.status(404).json({ message: 'Not found' });
-  }
-  db.prepare('DELETE FROM users WHERE id = ?').run(id);
-  res.json({ message: 'Deleted' });
 });
 
 module.exports = router;

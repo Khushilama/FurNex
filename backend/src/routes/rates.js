@@ -2,32 +2,51 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 
-router.get('/', (req, res) => {
-  res.json(db.prepare('SELECT * FROM rates').all());
+router.get('/', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM rates');
+    res.json(r.rows);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-router.post('/', (req, res) => {
-  const { name, category, ratePerUnit, unit, description } = req.body;
-  if (!name || !ratePerUnit) return res.status(400).json({ message: 'Missing fields' });
-  const result = db.prepare(
-    'INSERT INTO rates (name, category, ratePerUnit, unit, description) VALUES (?, ?, ?, ?, ?)'
-  ).run(name, category || '', ratePerUnit, unit || 'per piece', description || '');
-  res.status(201).json(db.prepare('SELECT * FROM rates WHERE id = ?').get(result.lastInsertRowid));
+router.post('/', async (req, res) => {
+  try {
+    const { name, category, ratePerUnit, unit, description } = req.body;
+    if (!name || !ratePerUnit) return res.status(400).json({ message: 'Missing fields' });
+    const r = await db.query(
+      'INSERT INTO rates (name, category, "ratePerUnit", unit, description) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, category || '', ratePerUnit, unit || 'per piece', description || '']
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-router.put('/:id', (req, res) => {
-  const { name, category, ratePerUnit, unit, description } = req.body;
-  const result = db.prepare(
-    'UPDATE rates SET name=?, category=?, ratePerUnit=?, unit=?, description=? WHERE id=?'
-  ).run(name, category, ratePerUnit, unit, description, parseInt(req.params.id));
-  if (result.changes === 0) return res.status(404).json({ message: 'Not found' });
-  res.json(db.prepare('SELECT * FROM rates WHERE id = ?').get(parseInt(req.params.id)));
+router.put('/:id', async (req, res) => {
+  try {
+    const { name, category, ratePerUnit, unit, description } = req.body;
+    const r = await db.query(
+      'UPDATE rates SET name=$1, category=$2, "ratePerUnit"=$3, unit=$4, description=$5 WHERE id=$6 RETURNING *',
+      [name, category, ratePerUnit, unit, description, parseInt(req.params.id)]
+    );
+    if (r.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-router.delete('/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM rates WHERE id = ?').run(parseInt(req.params.id));
-  if (result.changes === 0) return res.status(404).json({ message: 'Not found' });
-  res.json({ message: 'Deleted' });
+router.delete('/:id', async (req, res) => {
+  try {
+    const r = await db.query('DELETE FROM rates WHERE id=$1', [parseInt(req.params.id)]);
+    if (r.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    res.json({ message: 'Deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 module.exports = router;

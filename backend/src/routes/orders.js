@@ -2,13 +2,15 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 
-const today = new Date().toISOString().split('T')[0];
+const today = () => new Date().toISOString().split('T')[0];
 
-function deductStock(materials = []) {
-  const update = db.prepare('UPDATE materials SET quantity = MAX(0, quantity - ?), usedQty = usedQty + ? WHERE id = ?');
-  materials.forEach(({ productId, qty }) => {
-    update.run(Number(qty), Number(qty), productId);
-  });
+async function deductStock(materials = []) {
+  for (const { productId, qty } of materials) {
+    await db.query(
+      'UPDATE materials SET quantity = GREATEST(0, quantity - $1), "usedQty" = "usedQty" + $2 WHERE id = $3',
+      [Number(qty), Number(qty), productId]
+    );
+  }
 }
 
 const parseOrder = (o) => ({
@@ -17,70 +19,89 @@ const parseOrder = (o) => ({
   stockDeducted: !!o.stockDeducted,
 });
 
-router.get('/', (req, res) => {
-  res.json(db.prepare('SELECT * FROM orders ORDER BY id DESC').all().map(parseOrder));
-});
-
-router.post('/', (req, res) => {
-  const { customerName, customerId, item, amount, status, date, materials } = req.body;
-
-  // If customerId given, auto-fill customerName from customers table
-  let resolvedName = customerName;
-  if (customerId) {
-    const customer = db.prepare('SELECT name FROM customers WHERE id = ?').get(customerId);
-    if (customer) resolvedName = customer.name;
+router.get('/', async (req, res) => {
+  try {
+    const r = await db.query('SELECT * FROM orders ORDER BY id DESC');
+    res.json(r.rows.map(parseOrder));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-  if (!resolvedName || !amount) return res.status(400).json({ message: 'Missing fields' });
-
-  const newStatus = status || 'Pending';
-  const matsJson = JSON.stringify(materials || []);
-  const stockDeducted = newStatus === 'Delivered' ? 1 : 0;
-
-  const result = db.prepare(
-    'INSERT INTO orders (customerName, customerId, item, amount, status, date, materials, stockDeducted) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(resolvedName, customerId || null, item || '', amount, newStatus, date || today, matsJson, stockDeducted);
-
-  if (newStatus === 'Delivered') deductStock(materials || []);
-
-  res.status(201).json(parseOrder(db.prepare('SELECT * FROM orders WHERE id = ?').get(result.lastInsertRowid)));
 });
 
-router.put('/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  const existing = db.prepare('SELECT * FROM orders WHERE id = ?').get(id);
-  if (!existing) return res.status(404).json({ message: 'Not found' });
+router.post('/', async (req, res) => {
+  try {
+    const { customerName, customerId, item, amount, status, date, materials } = req.body;
 
-  const { customerName, customerId, item, amount, status, date, materials } = req.body;
-  const newStatus = status || existing.status;
-  const matsJson = materials !== undefined ? JSON.stringify(materials) : existing.materials;
+    let resolvedName = customerName;
+    if (customerId) {
+      const custR = await db.query('SELECT name FROM customers WHERE id=$1', [customerId]);
+      if (custR.rows[0]) resolvedName = custR.rows[0].name;
+    }
+    if (!resolvedName || !amount) return res.status(400).json({ message: 'Missing fields' });
 
-  let stockDeducted = existing.stockDeducted;
-  if (newStatus === 'Delivered' && existing.status !== 'Delivered' && !existing.stockDeducted) {
-    deductStock(JSON.parse(existing.materials || '[]'));
-    stockDeducted = 1;
+    const newStatus = status || 'Pending';
+    const matsJson = JSON.stringify(materials || []);
+    const stockDeducted = newStatus === 'Delivered' ? 1 : 0;
+
+    const r = await db.query(
+      'INSERT INTO orders ("customerName", "customerId", item, amount, status, date, materials, "stockDeducted") VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      [resolvedName, customerId || null, item || '', amount, newStatus, date || today(), matsJson, stockDeducted]
+    );
+
+    if (newStatus === 'Delivered') await deductStock(materials || []);
+
+    res.status(201).json(parseOrder(r.rows[0]));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-
-  db.prepare(
-    'UPDATE orders SET customerName=?, customerId=?, item=?, amount=?, status=?, date=?, materials=?, stockDeducted=? WHERE id=?'
-  ).run(
-    customerName || existing.customerName,
-    customerId !== undefined ? customerId : existing.customerId,
-    item || existing.item,
-    amount || existing.amount,
-    newStatus,
-    date || existing.date,
-    matsJson,
-    stockDeducted,
-    id
-  );
-
-  res.json(parseOrder(db.prepare('SELECT * FROM orders WHERE id = ?').get(id)));
 });
 
-router.delete('/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM orders WHERE id = ?').run(parseInt(req.params.id));
-  if (result.changes === 0) return res.status(404).json({ message: 'Not found' });
-  res.json({ message: 'Deleted' });
+router.put('/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const existingR = await db.query('SELECT * FROM orders WHERE id=$1', [id]);
+    if (existingR.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    const existing = existingR.rows[0];
+
+    const { customerName, customerId, item, amount, status, date, materials } = req.body;
+    const newStatus = status || existing.status;
+    const matsJson = materials !== undefined ? JSON.stringify(materials) : existing.materials;
+
+    let stockDeducted = existing.stockDeducted;
+    if (newStatus === 'Delivered' && existing.status !== 'Delivered' && !existing.stockDeducted) {
+      await deductStock(JSON.parse(existing.materials || '[]'));
+      stockDeducted = 1;
+    }
+
+    const r = await db.query(
+      'UPDATE orders SET "customerName"=$1, "customerId"=$2, item=$3, amount=$4, status=$5, date=$6, materials=$7, "stockDeducted"=$8 WHERE id=$9 RETURNING *',
+      [
+        customerName || existing.customerName,
+        customerId !== undefined ? customerId : existing.customerId,
+        item || existing.item,
+        amount || existing.amount,
+        newStatus,
+        date || existing.date,
+        matsJson,
+        stockDeducted,
+        id,
+      ]
+    );
+
+    res.json(parseOrder(r.rows[0]));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    const r = await db.query('DELETE FROM orders WHERE id=$1', [parseInt(req.params.id)]);
+    if (r.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    res.json({ message: 'Deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 module.exports = router;

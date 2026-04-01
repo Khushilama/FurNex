@@ -5,38 +5,56 @@ const db = require('../database');
 const today = () => new Date().toISOString().split('T')[0];
 
 // Recalculate order paidAmount and paymentStatus after any payment change
-function syncOrderPayment(orderId) {
-  const total = db.prepare('SELECT amount FROM orders WHERE id = ?').get(orderId)?.amount || 0;
-  const paid = db.prepare('SELECT COALESCE(SUM(amount),0) as s FROM payments WHERE orderId = ?').get(orderId).s;
+async function syncOrderPayment(orderId) {
+  const orderR = await db.query('SELECT amount FROM orders WHERE id=$1', [orderId]);
+  const total = orderR.rows[0]?.amount || 0;
+  const paidR = await db.query('SELECT COALESCE(SUM(amount), 0) AS s FROM payments WHERE "orderId"=$1', [orderId]);
+  const paid = Number(paidR.rows[0].s);
   const status = paid <= 0 ? 'Unpaid' : paid >= total ? 'Paid' : 'Partial';
-  db.prepare('UPDATE orders SET paidAmount = ?, paymentStatus = ? WHERE id = ?').run(paid, status, orderId);
+  await db.query('UPDATE orders SET "paidAmount"=$1, "paymentStatus"=$2 WHERE id=$3', [paid, status, orderId]);
 }
 
-router.get('/', (req, res) => {
-  const { orderId } = req.query;
-  if (orderId) {
-    res.json(db.prepare('SELECT * FROM payments WHERE orderId = ? ORDER BY date DESC').all(parseInt(orderId)));
-  } else {
-    res.json(db.prepare('SELECT * FROM payments ORDER BY date DESC').all());
+router.get('/', async (req, res) => {
+  try {
+    const { orderId } = req.query;
+    if (orderId) {
+      const r = await db.query('SELECT * FROM payments WHERE "orderId"=$1 ORDER BY date DESC', [parseInt(orderId)]);
+      res.json(r.rows);
+    } else {
+      const r = await db.query('SELECT * FROM payments ORDER BY date DESC');
+      res.json(r.rows);
+    }
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
 });
 
-router.post('/', (req, res) => {
-  const { orderId, amount, method, date, notes } = req.body;
-  if (!orderId || !amount) return res.status(400).json({ message: 'orderId and amount required' });
-  const result = db.prepare(
-    'INSERT INTO payments (orderId, amount, method, date, notes) VALUES (?, ?, ?, ?, ?)'
-  ).run(orderId, amount, method || 'Cash', date || today(), notes || '');
-  syncOrderPayment(orderId);
-  res.status(201).json(db.prepare('SELECT * FROM payments WHERE id = ?').get(result.lastInsertRowid));
+router.post('/', async (req, res) => {
+  try {
+    const { orderId, amount, method, date, notes } = req.body;
+    if (!orderId || !amount) return res.status(400).json({ message: 'orderId and amount required' });
+    const r = await db.query(
+      'INSERT INTO payments ("orderId", amount, method, date, notes) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [orderId, amount, method || 'Cash', date || today(), notes || '']
+    );
+    await syncOrderPayment(orderId);
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-router.delete('/:id', (req, res) => {
-  const payment = db.prepare('SELECT * FROM payments WHERE id = ?').get(parseInt(req.params.id));
-  if (!payment) return res.status(404).json({ message: 'Not found' });
-  db.prepare('DELETE FROM payments WHERE id = ?').run(payment.id);
-  syncOrderPayment(payment.orderId);
-  res.json({ message: 'Deleted' });
+router.delete('/:id', async (req, res) => {
+  try {
+    const paymentR = await db.query('SELECT * FROM payments WHERE id=$1', [parseInt(req.params.id)]);
+    if (paymentR.rowCount === 0) return res.status(404).json({ message: 'Not found' });
+    const payment = paymentR.rows[0];
+    await db.query('DELETE FROM payments WHERE id=$1', [payment.id]);
+    await syncOrderPayment(payment.orderId);
+    res.json({ message: 'Deleted' });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 module.exports = router;

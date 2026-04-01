@@ -32,6 +32,7 @@ export const authApi = {
 export const api = {
   getEmployees: () => client.get('/employees'),
   addEmployee: (data) => client.post('/employees', data),
+  updateEmployee: (id, data) => client.put(`/employees/${id}`, data),
   deleteEmployee: (id) => client.delete(`/employees/${id}`),
 
   getAttendance: () => client.get('/attendance'),

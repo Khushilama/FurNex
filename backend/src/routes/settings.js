@@ -2,20 +2,30 @@ const express = require('express');
 const router = express.Router();
 const db = require('../database');
 
-router.get('/', (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM settings').all();
-  const settings = Object.fromEntries(rows.map(r => [r.key, r.value]));
-  res.json(settings);
+router.get('/', async (req, res) => {
+  try {
+    const r = await db.query('SELECT key, value FROM settings');
+    const settings = Object.fromEntries(r.rows.map(row => [row.key, row.value]));
+    res.json(settings);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
-router.put('/', (req, res) => {
-  const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
-  const upsertMany = db.transaction((entries) => {
-    entries.forEach(([k, v]) => upsert.run(k, String(v)));
-  });
-  upsertMany(Object.entries(req.body));
-  const rows = db.prepare('SELECT key, value FROM settings').all();
-  res.json(Object.fromEntries(rows.map(r => [r.key, r.value])));
+router.put('/', async (req, res) => {
+  try {
+    const entries = Object.entries(req.body);
+    for (const [k, v] of entries) {
+      await db.query(
+        'INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+        [k, String(v)]
+      );
+    }
+    const r = await db.query('SELECT key, value FROM settings');
+    res.json(Object.fromEntries(r.rows.map(row => [row.key, row.value])));
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 });
 
 module.exports = router;
