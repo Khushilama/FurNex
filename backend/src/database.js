@@ -276,5 +276,10 @@ const seedDatabase = async () => {
 // Initialize on module load
 initializeDatabase();
 
+// Keep pool alive — prevents Node from exiting due to idle Neon connections
+setInterval(() => {
+  pool.query('SELECT 1').catch(() => {});
+}, 30000);
+
 // Export pool for use in route handlers
 module.exports = pool;
